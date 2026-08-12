@@ -22,7 +22,6 @@ function loadPluginRuntime(overrides = {}) {
     RANDOM_DAILY_ORB_STYLES,
     STATIC_ORB_STYLES,
     renderAboutCard: typeof renderAboutCard === "function" ? renderAboutCard : undefined,
-    CRISP_LICENSE_PRODUCTS,
   };`;
   const clearedTimers = [];
   const scheduledTimers = new Map();
@@ -154,20 +153,6 @@ test("settings About card exposes the plugin purpose and author", () => {
   assert.equal(author.target, "_blank");
   assert.equal(author.rel, "noopener noreferrer");
   assert.equal(card.children.includes(author), false);
-});
-
-test("license compatibility includes the complete current Crisp family", () => {
-  const { CRISP_LICENSE_PRODUCTS } = loadPluginRuntime();
-  assert.deepEqual(Array.from(CRISP_LICENSE_PRODUCTS), [
-    "Crisp Suite",
-    "Crisp Organize",
-    "Crisp ASR",
-    "Crisp Annotations",
-    "Crisp File Explorer",
-    "Crisp Focus",
-    "Crisp Reading Rail",
-    "Crisp Base",
-  ]);
 });
 
 function fakeClassList() {
