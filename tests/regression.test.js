@@ -13,6 +13,9 @@ function loadPluginRuntime(overrides = {}) {
     indexRangeAround: typeof indexRangeAround === "function" ? indexRangeAround : undefined,
     mutationTouchesFileTree: typeof mutationTouchesFileTree === "function" ? mutationTouchesFileTree : undefined,
     hasStableTickTopology: typeof hasStableTickTopology === "function" ? hasStableTickTopology : undefined,
+    reconcileMeasuredItemMotion: typeof reconcileMeasuredItemMotion === "function" ? reconcileMeasuredItemMotion : undefined,
+    normalizeActivity: typeof normalizeActivity === "function" ? normalizeActivity : undefined,
+    rankSmartMagnetPaths: typeof rankSmartMagnetPaths === "function" ? rankSmartMagnetPaths : undefined,
     resolveOrbTarget: typeof resolveOrbTarget === "function" ? resolveOrbTarget : undefined,
     rewriteActivityPaths: typeof rewriteActivityPaths === "function" ? rewriteActivityPaths : undefined,
     dispatchMouseSequence: typeof dispatchMouseSequence === "function" ? dispatchMouseSequence : undefined,
@@ -97,6 +100,23 @@ test("maintenance documents track the runtime manifest version", () => {
   assert.match(checklist, new RegExp(`v${manifest.version.replaceAll(".", "\\.")}`));
   assert.match(checklist, new RegExp(`manifest\\.json.*${manifest.version.replaceAll(".", "\\.")}`));
   assert.match(optimization, new RegExp(`当前版本：v${manifest.version.replaceAll(".", "\\.")}`));
+});
+
+test("settings groups and plugin commands are fully localized", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+
+  for (const text of [
+    "小球与视觉",
+    "音效反馈",
+    "活动与磁吸",
+    "拖动与文件树",
+    "切换文件夹刻度",
+    "切换拖动音效",
+  ]) {
+    assert.match(source, new RegExp(`"${text}"`));
+  }
+  assert.doesNotMatch(source, /"(?:Orb & Visual Appearance|Audio & Sound Feedback|Activity & Heatmap|Drag & File Tree Interaction)"/);
+  assert.doesNotMatch(source, /name:\s*"Toggle (?:folder marks|tick sound)"/);
 });
 
 function createAboutCardFixture() {
@@ -411,6 +431,62 @@ test("a transient missing active file preserves the current orb target", () => {
   assert.equal(resolveOrbTarget(items, { center: 110 }, true, 125), 110);
 });
 
+test("a retained folder target still offsets its label when no file is active", () => {
+  const { FileExplorerRail } = loadPluginRuntime();
+  const createTitle = (path, top, isFolder) => ({
+    classList: fakeClassList(isFolder ? "nav-folder-title" : "nav-file-title"),
+    closest() { return null; },
+    getAttribute(name) { return name === "data-path" ? path : null; },
+    getBoundingClientRect() { return { top, height: 20 }; },
+    style: { removeProperty() {} },
+  });
+  const firstFile = createTitle("AGENTS.md", 20, false);
+  const targetFolder = createTitle("Topics", 60, true);
+  const controller = {
+    destroyed: false,
+    container: {
+      isConnected: true,
+      scrollTop: 0,
+      scrollHeight: 300,
+      clientHeight: 240,
+      querySelectorAll() { return [firstFile, targetFolder]; },
+      getBoundingClientRect() { return { top: 0 }; },
+      style: { setProperty() {} },
+    },
+    plugin: {
+      settings: { orbStyle: "default", includeFolders: true },
+      app: { workspace: { getActiveFile: () => null } },
+      getTodayPathSet: () => new Set(),
+      getFrequentPathSet: () => new Set(),
+      getPinnedPathSet: () => new Set(),
+    },
+    orb: { dataset: { orbStyle: "default" } },
+    items: [],
+    tickMarks: [],
+    hasOrbPosition: true,
+    displayY: 70,
+    targetY: 70,
+    isDragging: false,
+    dynamicItemRange: [0, -1],
+    dynamicTickRange: [0, -1],
+    nearestTickIndex: -1,
+    syncOwnerContext() {},
+    isVisible: () => true,
+    setEnabled() {},
+    syncEmptyState() {},
+    updateRailLineBounds() {},
+    syncTickElements() {},
+    syncDragPositionAfterMeasure: () => false,
+    render() {},
+    requestFrame() {},
+  };
+
+  FileExplorerRail.prototype.refresh.call(controller);
+
+  assert.equal(controller.visualActiveIndex, 1);
+  assert.equal(controller.items[controller.visualActiveIndex].path, "Topics");
+});
+
 test("queued plugin refreshes are ignored after unload starts", () => {
   const { PluginClass, scheduledFrames } = loadPluginRuntime();
   const plugin = Object.create(PluginClass.prototype);
@@ -477,6 +553,29 @@ test("audio creates a separate AudioContext per owner window", () => {
   assert.equal(audio.contextList.size, 2);
 });
 
+test("drag pitch scaling preserves the selected sound style", () => {
+  const { CrispAudio } = loadPluginRuntime();
+  const tones = [];
+  const audio = Object.create(CrispAudio.prototype);
+  audio.lastTickAt = -Infinity;
+  audio.currentOwnerWindow = null;
+  audio.playTone = (options) => tones.push(options);
+
+  audio.tick("wooden", 0.5, true);
+  audio.lastTickAt = -Infinity;
+  audio.tick("mechanical", 0.5, true);
+  audio.lastTickAt = -Infinity;
+  audio.tick("wooden", 0, true);
+  audio.lastTickAt = -Infinity;
+  audio.tick("wooden", 1, true);
+
+  assert.equal(tones.length, 4);
+  assert.equal(tones[0].type, "sine");
+  assert.equal(tones[1].type, "square");
+  assert.notEqual(tones[0].frequency, tones[1].frequency);
+  assert.ok(tones[2].frequency < tones[3].frequency);
+});
+
 test("stable far-away rows are not rewritten on every animation frame", () => {
   const { FileExplorerRail } = loadPluginRuntime();
   let propertyWrites = 0;
@@ -527,6 +626,52 @@ test("stable far-away rows are not rewritten on every animation frame", () => {
   assert.equal(propertyWrites, 0, "file rows should not animate through CSS variables");
   assert.equal(translateWrites, 0, "far rows outside the dynamic range should not be rewritten");
   assert.equal(itemStyle.translate, "");
+});
+
+test("folder visual target shares the active file label offset", () => {
+  const { FileExplorerRail } = loadPluginRuntime();
+  const itemStyle = {
+    _translate: "",
+    set translate(value) {
+      this._translate = value;
+    },
+    get translate() {
+      return this._translate;
+    },
+  };
+  const item = {
+    center: 0,
+    active: false,
+    el: {
+      style: itemStyle,
+      classList: fakeClassList(),
+    },
+  };
+  const controller = {
+    displayY: 0,
+    isDragging: false,
+    tickSideMap: new Map(),
+    tickMarks: [],
+    tickEls: [],
+    items: [item],
+    dynamicTickRange: [0, -1],
+    dynamicItemRange: [0, -1],
+    nearestTickIndex: -1,
+    visualActiveIndex: 0,
+    orb: {
+      style: {},
+      classList: fakeClassList(),
+      dataset: { orbStyle: "default" },
+      querySelector: () => null,
+    },
+    container: { scrollTop: 0 },
+    updateRailLineFocus() {},
+    renderOrbBall: FileExplorerRail.prototype.renderOrbBall,
+  };
+
+  FileExplorerRail.prototype.render.call(controller);
+
+  assert.equal(itemStyle.translate, "34px 0px");
 });
 
 test("tick motion uses scaleX without per-frame width writes", () => {
@@ -751,6 +896,104 @@ test("rows leaving the motion range release their inline translate", () => {
 
   assert.deepEqual(removed, ["translate"]);
   assert.equal(zeroWrites, 0);
+});
+
+test("stable resize refresh preserves the active row translation until the next render", () => {
+  const { reconcileMeasuredItemMotion } = loadPluginRuntime();
+  assert.equal(typeof reconcileMeasuredItemMotion, "function");
+
+  const removed = [];
+  const activeElement = {
+    style: { removeProperty: (name) => removed.push(name) },
+  };
+  const previousItems = [{ el: activeElement, renderedX: 34 }];
+  const nextItems = [{ el: activeElement, renderedX: undefined }];
+
+  const nextRange = reconcileMeasuredItemMotion(
+    previousItems,
+    nextItems,
+    [0, 0],
+    true,
+  );
+
+  assert.deepEqual(Array.from(nextRange), [0, 0]);
+  assert.equal(nextItems[0].renderedX, 34);
+  assert.deepEqual(removed, []);
+});
+
+test("file-tree remeasurement keeps stable active-row motion applied", () => {
+  const { FileExplorerRail } = loadPluginRuntime();
+  const removed = [];
+  const activeElement = {
+    classList: fakeClassList("nav-file-title", "crisp-fe-item", "crisp-fe-file", "crisp-fe-active"),
+    closest() { return null; },
+    getAttribute(name) { return name === "data-path" ? "notes/active.md" : null; },
+    getBoundingClientRect() { return { top: 40, height: 20 }; },
+    style: { removeProperty: (name) => removed.push(name) },
+  };
+  const controller = {
+    destroyed: false,
+    container: {
+      isConnected: true,
+      scrollTop: 0,
+      scrollHeight: 400,
+      clientHeight: 300,
+      querySelectorAll() { return [activeElement]; },
+      getBoundingClientRect() { return { top: 0 }; },
+      style: { setProperty() {} },
+    },
+    plugin: {
+      settings: { orbStyle: "default", includeFolders: true },
+      app: { workspace: { getActiveFile: () => ({ path: "notes/active.md" }) } },
+      getTodayPathSet: () => new Set(),
+      getFrequentPathSet: () => new Set(),
+      getPinnedPathSet: () => new Set(),
+    },
+    orb: { dataset: { orbStyle: "default" } },
+    items: [{
+      el: activeElement,
+      center: 50,
+      path: "notes/active.md",
+      type: "file",
+      active: true,
+      today: false,
+      magnet: false,
+      pinned: false,
+      renderedX: 34,
+    }],
+    tickMarks: [{
+      y: 50,
+      kind: "long",
+      itemIndex: 0,
+      isFile: true,
+      isToday: false,
+      isMagnet: false,
+      isPinned: false,
+    }],
+    hasOrbPosition: true,
+    displayY: 50,
+    targetY: 50,
+    isDragging: false,
+    dynamicItemRange: [0, 0],
+    dynamicTickRange: [0, 0],
+    nearestTickIndex: 0,
+    syncOwnerContext() {},
+    isVisible: () => true,
+    setEnabled() {},
+    syncEmptyState() {},
+    updateRailLineBounds() {},
+    syncTickElements() {},
+    syncDragPositionAfterMeasure: () => false,
+    ensureItemVisible() {},
+    render() {},
+    requestFrame() {},
+  };
+
+  FileExplorerRail.prototype.refresh.call(controller);
+
+  assert.equal(controller.items[0].renderedX, 34);
+  assert.deepEqual(Array.from(controller.dynamicItemRange), [0, 0]);
+  assert.deepEqual(removed, []);
 });
 
 test("pointer movement reads the container layout only once", () => {
@@ -1054,11 +1297,143 @@ test("activity marker sets are cached until activity changes", () => {
   assert.equal(frequentBuilds, 1);
 });
 
+test("smart magnets favor recent use and expire stale lifetime leaders", () => {
+  const { rankSmartMagnetPaths } = loadPluginRuntime();
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.UTC(2026, 7, 12);
+  const activity = {
+    pinnedPaths: [],
+    fileStats: {
+      "stale-heavy.md": { count: 200, lastOpened: now - 120 * day },
+      "recent-steady.md": { count: 4, lastOpened: now - day },
+      "recent-light.md": { count: 2, lastOpened: now - 2 * day },
+      "old-but-valid.md": { count: 40, lastOpened: now - 30 * day },
+    },
+  };
+
+  const result = rankSmartMagnetPaths(activity, now);
+
+  assert.deepEqual(Array.from(result.recommendedPaths), [
+    "recent-steady.md",
+    "recent-light.md",
+    "old-but-valid.md",
+  ]);
+  assert.equal(result.recommendedPaths.includes("stale-heavy.md"), false);
+});
+
+test("pinned rail points take priority and keep the total magnet count at eight", () => {
+  const { rankSmartMagnetPaths } = loadPluginRuntime();
+  const now = Date.UTC(2026, 7, 12);
+  const pinnedPaths = ["home.md", "inbox.md", "database.md"];
+  const fileStats = Object.fromEntries(
+    Array.from({ length: 10 }, (_, index) => [
+      `auto-${index}.md`,
+      { count: 20 - index, lastOpened: now - index * 1000 },
+    ]),
+  );
+
+  const result = rankSmartMagnetPaths({ pinnedPaths, fileStats }, now);
+
+  assert.deepEqual(Array.from(result.pinnedPaths), pinnedPaths);
+  assert.equal(result.recommendedPaths.length, 5);
+  assert.equal(new Set([...result.pinnedPaths, ...result.recommendedPaths]).size, 8);
+});
+
+test("activity normalization deduplicates and caps manual rail pins", () => {
+  const { normalizeActivity } = loadPluginRuntime();
+  const normalized = normalizeActivity({
+    pinnedPaths: [
+      "one.md",
+      "two.md",
+      "one.md",
+      "three.md",
+      "four.md",
+      "five.md",
+      "six.md",
+      "seven.md",
+      "eight.md",
+      "nine.md",
+    ],
+  });
+
+  assert.deepEqual(Array.from(normalized.pinnedPaths), [
+    "one.md",
+    "two.md",
+    "three.md",
+    "four.md",
+    "five.md",
+    "six.md",
+    "seven.md",
+    "eight.md",
+  ]);
+});
+
+test("file context menus expose the correct Crisp Rail pin action", () => {
+  const { PluginClass } = loadPluginRuntime();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    frequentMagnetsEnabled: false,
+    activity: { pinnedPaths: ["pinned.md"] },
+  };
+  const items = [];
+  const menu = {
+    addItem(callback) {
+      const item = {
+        setTitle(value) { this.title = value; return this; },
+        setIcon(value) { this.icon = value; return this; },
+        onClick(callbackValue) { this.callback = callbackValue; return this; },
+      };
+      callback(item);
+      items.push(item);
+    },
+  };
+
+  plugin.addCrispRailMenuItem(menu, { path: "normal.md" });
+  plugin.addCrispRailMenuItem(menu, { path: "pinned.md" });
+  plugin.addCrispRailMenuItem(menu, { path: "folder", children: [] });
+
+  assert.deepEqual(
+    items.map(({ title, icon }) => ({ title, icon })),
+    [
+      { title: "固定到 Crisp Rail", icon: "pin" },
+      { title: "从 Crisp Rail 取消固定", icon: "pin-off" },
+    ],
+  );
+});
+
+test("manual rail pin changes persist and refresh without exceeding the limit", async () => {
+  const { PluginClass } = loadPluginRuntime();
+  const plugin = Object.create(PluginClass.prototype);
+  let saves = 0;
+  let refreshes = 0;
+  plugin.settings = {
+    activity: {
+      pinnedPaths: ["one.md", "two.md", "three.md", "four.md", "five.md", "six.md", "seven.md"],
+      fileStats: {},
+    },
+  };
+  plugin.saveSettings = async () => { saves += 1; };
+  plugin.scheduleRefresh = () => { refreshes += 1; };
+
+  const added = await plugin.togglePinnedPath("eight.md");
+  const rejected = await plugin.togglePinnedPath("nine.md");
+  const removed = await plugin.togglePinnedPath("two.md");
+
+  assert.deepEqual(JSON.parse(JSON.stringify(added)), { changed: true, pinned: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(rejected)), { changed: false, pinned: false, limitReached: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(removed)), { changed: true, pinned: false });
+  assert.equal(plugin.settings.activity.pinnedPaths.includes("eight.md"), true);
+  assert.equal(plugin.settings.activity.pinnedPaths.includes("two.md"), false);
+  assert.equal(saves, 2);
+  assert.equal(refreshes, 2);
+});
+
 test("activity state follows folder renames and removes deleted paths", () => {
   const { rewriteActivityPaths } = loadPluginRuntime();
   assert.equal(typeof rewriteActivityPaths, "function");
   const original = {
     todayKey: "2026-07-28",
+    pinnedPaths: ["Projects/A.md", "Keep.md", "Projects/Sub/B.md"],
     todayPaths: [
       "Projects/A.md",
       "Keep.md",
@@ -1076,6 +1451,7 @@ test("activity state follows folder renames and removes deleted paths", () => {
   const renamed = rewriteActivityPaths(original, "Projects", "Archive");
   assert.deepEqual(JSON.parse(JSON.stringify(renamed)), {
     todayKey: "2026-07-28",
+    pinnedPaths: ["Archive/A.md", "Keep.md", "Archive/Sub/B.md"],
     todayPaths: ["Keep.md", "Archive/A.md", "Archive/Sub/B.md"],
     fileStats: {
       "Archive/A.md": { count: 5, lastOpened: 30 },
@@ -1093,11 +1469,23 @@ test("activity state follows folder renames and removes deleted paths", () => {
   const deleted = rewriteActivityPaths(renamed, "Archive", null);
   assert.deepEqual(JSON.parse(JSON.stringify(deleted)), {
     todayKey: "2026-07-28",
+    pinnedPaths: ["Keep.md"],
     todayPaths: ["Keep.md"],
     fileStats: {
       "Keep.md": { count: 1, lastOpened: 10 },
     },
   });
+});
+
+test("manual rail pins use a stronger dot without changing the shared rail geometry", () => {
+  const css = readStyles();
+  const pinnedBlock = css.match(/\.crisp-fe-tick\.is-pinned::after\s*\{([^}]*)\}/);
+
+  assert.ok(pinnedBlock);
+  assert.match(pinnedBlock[1], /width:\s*5px/);
+  assert.match(pinnedBlock[1], /height:\s*5px/);
+  assert.match(pinnedBlock[1], /opacity:\s*0\.96/);
+  assert.doesNotMatch(pinnedBlock[1], /left:|top:\s*(?!50%)/);
 });
 
 test("runtime workspace listeners start once, after layout ready", () => {
@@ -1106,7 +1494,8 @@ test("runtime workspace listeners start once, after layout ready", () => {
   assert.match(source, /startRuntime\(\)\s*\{[\s\S]*?if \(this\.runtimeStarted/);
   assert.match(source, /workspace\.on\("window-open",\s*\(\)\s*=>\s*this\.scheduleRefresh\(\)\)/);
   assert.match(source, /workspace\.on\("window-close",\s*\(\)\s*=>\s*this\.scheduleRefresh\(\)\)/);
-  const onload = source.match(/async onload\(\)\s*\{([\s\S]*?)\n\s*\}\n\n\s*onunload\(\)/);
+  assert.match(source, /workspace\.on\("file-menu",\s*\(menu, file\)\s*=>\s*\{/);
+  const onload = source.match(/async onload\(\)\s*\{([\s\S]*?)\r?\n\s*\}\r?\n\r?\n\s*onunload\(\)/);
   assert.ok(onload);
   const beforeReady = onload[1].split("onLayoutReady")[0];
   assert.doesNotMatch(beforeReady, /workspace\.on\("(?:layout-change|active-leaf-change|file-open)"/);
@@ -1599,6 +1988,68 @@ test("window blur cancels a drag and requests a clean file-tree refresh", () => 
   assert.equal(cancellations, 1);
   assert.equal(refreshes, 1);
   assert.equal(frames, 1);
+});
+
+test("pointer release without navigation restores the active file target", () => {
+  const { FileExplorerRail } = loadPluginRuntime();
+  let refreshes = 0;
+  const controller = {
+    destroyed: false,
+    isDragging: true,
+    dragPointerId: 9,
+    displayY: 100,
+    items: [{ center: 100, type: "file", path: "other.md", el: {} }],
+    autoExpandedFolderPaths: new Set(),
+    plugin: {
+      settings: {
+        releaseSoundEnabled: false,
+        openOnDragRelease: false,
+      },
+      scheduleRefresh() { refreshes += 1; },
+    },
+    orb: { dataset: { orbStyle: "default" } },
+    updateDrag() {},
+    setDragging(active) { this.isDragging = active; },
+    releasePointerCapture() {},
+    cancelDragScroll() {},
+    clearAutoExpandTimer() {},
+    cleanupDragListeners() {},
+    requestFrame() {},
+  };
+
+  FileExplorerRail.prototype.handlePointerUp.call(controller, {
+    type: "pointerup",
+    pointerId: 9,
+    preventDefault() {},
+    stopPropagation() {},
+  });
+
+  assert.equal(refreshes, 1);
+});
+
+test("drag cleanup removes listeners from the window where they were bound", () => {
+  const { FileExplorerRail } = loadPluginRuntime();
+  const previousRemovals = [];
+  const nextRemovals = [];
+  const previousWindow = {
+    removeEventListener(type) { previousRemovals.push(type); },
+  };
+  const nextWindow = {
+    removeEventListener(type) { nextRemovals.push(type); },
+  };
+  const controller = {
+    container: { ownerDocument: { defaultView: nextWindow } },
+    dragOwnerWindow: previousWindow,
+    onPointerMove() {},
+    onPointerUp() {},
+    onWindowBlur() {},
+  };
+
+  FileExplorerRail.prototype.cleanupDragListeners.call(controller);
+
+  assert.deepEqual(previousRemovals, ["pointermove", "pointerup", "pointercancel", "blur"]);
+  assert.deepEqual(nextRemovals, []);
+  assert.equal(controller.dragOwnerWindow, null);
 });
 
 test("destroyed controllers ignore pointer move and up events", () => {
